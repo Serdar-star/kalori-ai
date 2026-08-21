@@ -11,6 +11,49 @@ export interface CoachCtx {
   weekAvg: number;
 }
 
+/** Optional free Gemini reply when key is set; falls back to local intents. */
+export async function tryGeminiCoach(
+  userText: string,
+  ctx: CoachCtx
+): Promise<{ text: string } | null> {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key || !userText.trim()) return null;
+
+  const left = ctx.profile.dailyCalories - ctx.totals.calories;
+  const prompt = `You are Kalora, a friendly free nutrition coach. Be concise (2-4 short sentences).
+User profile: goal=${ctx.profile.goal}, daily kcal target=${ctx.profile.dailyCalories}, protein goal=${ctx.profile.proteinGoal}g.
+Today: eaten ${ctx.totals.calories} kcal (P${Math.round(ctx.totals.protein)} C${Math.round(ctx.totals.carbs)} F${Math.round(ctx.totals.fat)}), remaining ~${left} kcal, water ${ctx.waterMl}ml / ${ctx.profile.waterGoalMl}ml, streak ${ctx.streakCurrent} days.
+Meals today: ${ctx.todayEntries.map((e) => e.name).slice(0, 8).join(", ") || "none yet"}.
+User says: "${userText.slice(0, 300)}"
+Reply in the same language as the user. No medical claims. Suggest practical food ideas that fit remaining macros.`;
+
+  try {
+    const model = (process.env.GEMINI_MODEL || "gemini-2.0-flash").trim();
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(key)}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 12_000);
+    const res = await fetch(endpoint, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.6, maxOutputTokens: 280 },
+      }),
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      candidates?: { content?: { parts?: { text?: string }[] } }[];
+    };
+    const text = data.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("").trim();
+    if (!text || text.length < 8) return null;
+    return { text: text.slice(0, 900) };
+  } catch {
+    return null;
+  }
+}
+
 export type Intent =
   | "status"
   | "eat"

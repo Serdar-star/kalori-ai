@@ -9,6 +9,7 @@ const ALLOWED = new Set([
   "name", "avatar", "goal", "dailyCalories", "proteinGoal", "carbsGoal", "fatGoal",
   "waterGoalMl", "units", "lang", "theme", "notifications", "reminders", "pro", "onboarded",
   "uid", "email", "photoUrl", "plan",
+  "streakFreezes", "freezeWeek", "challengeId", "challengeProgress", "challengeClaimed",
 ]);
 
 export async function POST(req: Request) {

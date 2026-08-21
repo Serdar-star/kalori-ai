@@ -1,23 +1,8 @@
 import type { Metadata, Viewport } from "next";
-import { Manrope, Sora } from "next/font/google";
 import type { ReactNode } from "react";
 import { AuthProvider } from "@/lib/auth";
 import { AppProvider } from "@/lib/store";
 import "./globals.css";
-
-const sora = Sora({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700", "800"],
-  variable: "--font-display",
-  display: "swap",
-});
-
-const manrope = Manrope({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700", "800"],
-  variable: "--font-ui",
-  display: "swap",
-});
 
 export const metadata: Metadata = {
   title: "Kalora — AI Calorie & Nutrition Tracker",
@@ -46,7 +31,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" data-theme="dark" suppressHydrationWarning>
-      <body className={`${sora.variable} ${manrope.variable} ambient min-h-dvh antialiased`}>
+      <body className="ambient min-h-dvh antialiased">
         <AppProvider>
           <AuthProvider>{children}</AuthProvider>
         </AppProvider>

@@ -2,7 +2,7 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { InstallPrompt } from "@/components/InstallPrompt";
 import { LoginScreen } from "@/components/LoginScreen";
@@ -40,9 +40,8 @@ const NAV = [
 export default function AppShell({ children }: { children: ReactNode }) {
   const { status, profile, openScan, t, refresh, updateProfile, celebrate } = useApp();
   const { streak, level } = useDerived();
-  const { status: authStatus, user } = useAuth();
+  const { status: authStatus, user, realMode } = useAuth();
   const pathname = usePathname();
-  const router = useRouter();
   const syncingUid = useRef<string | null>(null);
   const [welcome, setWelcome] = useState(false);
   const prevAuth = useRef<string | null>(null);
@@ -76,7 +75,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       });
   }, [user, profile, updateProfile, refresh]);
 
-  if (authStatus === "loading") {
+  if (authStatus === "loading" || status === "loading") {
     return (
       <div className="relative z-10 grid min-h-dvh place-items-center">
         <div className="flex flex-col items-center gap-4">
@@ -87,7 +86,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
     );
   }
 
-  if (authStatus === "signedOut" || !user) {
+  if (realMode && (authStatus === "signedOut" || !user)) {
     return (
       <>
         <ToastHost />
@@ -96,14 +95,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
     );
   }
 
-  if (status === "loading") {
+  // Demo mode always has a user; if somehow missing, recover instantly
+  if (!user) {
     return (
-      <div className="relative z-10 grid min-h-dvh place-items-center">
-        <div className="flex flex-col items-center gap-4">
-          <SplashLogo />
-          <p className="text-[12px] font-bold text-[var(--muted)]">{t("loading")}</p>
-        </div>
-      </div>
+      <>
+        <ToastHost />
+        <LoginScreen />
+      </>
     );
   }
 
@@ -115,6 +113,19 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <p className="mt-2 text-[14px] font-bold">{t("error_generic")}</p>
           <button onClick={() => void refresh()} className="btn-accent mt-4 px-6 py-2.5 text-[13px]">
             ↻
+          </button>
+          <button
+            onClick={() => {
+              try {
+                localStorage.removeItem("kalora_demo_user");
+              } catch {
+                /* ignore */
+              }
+              window.location.reload();
+            }}
+            className="btn-ghost mt-2 w-full py-2.5 text-[13px]"
+          >
+            Reset session
           </button>
         </div>
       </div>
@@ -216,21 +227,15 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 />
               </div>
             </div>
-            {!profile.pro && (
-              <button
-                onClick={() => router.push("/profile")}
-                className="card-flat flex w-full items-center gap-2.5 p-3.5 text-start transition hover:border-[var(--amber)]"
-              >
-                <span className="grid h-8 w-8 place-items-center rounded-full bg-[var(--amber-soft)] text-[var(--amber)]">
-                  <Ic name="crown" size={16} strokeWidth={2.2} />
-                </span>
-                <div className="min-w-0">
-                  <p className="text-[12.5px] font-extrabold">{t("pro_title")}</p>
-                  <p className="truncate text-[11px] font-semibold text-[var(--muted)]">{t("pro_month")}</p>
-                </div>
-                <Ic name="chev" size={15} className="ms-auto shrink-0 text-[var(--faint)] rtl:rotate-180" />
-              </button>
-            )}
+            <div className="card-flat flex w-full items-center gap-2.5 p-3.5 text-start">
+              <span className="grid h-8 w-8 place-items-center rounded-full bg-[var(--teal-soft)] text-[var(--teal)]">
+                <Ic name="check" size={16} strokeWidth={2.4} />
+              </span>
+              <div className="min-w-0">
+                <p className="text-[12.5px] font-extrabold">{t("scan_free_badge").split("·")[0]?.trim() || "Free"}</p>
+                <p className="truncate text-[11px] font-semibold text-[var(--muted)]">USDA · Offline</p>
+              </div>
+            </div>
           </div>
         </aside>
 

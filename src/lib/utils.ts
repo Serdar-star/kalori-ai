@@ -33,11 +33,19 @@ export function levelFromXp(xp: number): { level: number; into: number; need: nu
   return { level, into: rest, need, pct: Math.min(100, Math.round((rest / need) * 100)) };
 }
 
-/** Consecutive days (ending today or yesterday) with at least one entry. */
-export function computeStreak(dates: Set<string>): { current: number; best: number } {
+/**
+ * Consecutive days (ending today or yesterday) with at least one entry.
+ * Optional `frozenDates` counts as a logged day (streak freeze shield).
+ */
+export function computeStreak(
+  dates: Set<string>,
+  frozenDates?: Set<string>
+): { current: number; best: number } {
+  const active = new Set(dates);
+  if (frozenDates) for (const d of frozenDates) active.add(d);
+
   let best = 0;
-  // best streak across history
-  const sorted = Array.from(dates).sort();
+  const sorted = Array.from(active).sort();
   let run = 0;
   let prev: string | null = null;
   for (const d of sorted) {
@@ -46,11 +54,10 @@ export function computeStreak(dates: Set<string>): { current: number; best: numb
     best = Math.max(best, run);
     prev = d;
   }
-  // current streak ending today (or yesterday if today not logged yet)
   let current = 0;
   let cursor = todayStr();
-  if (!dates.has(cursor)) cursor = shiftDate(cursor, -1);
-  while (dates.has(cursor)) {
+  if (!active.has(cursor)) cursor = shiftDate(cursor, -1);
+  while (active.has(cursor)) {
     current += 1;
     cursor = shiftDate(cursor, -1);
   }

@@ -1,6 +1,5 @@
 "use client";
 
-import confetti from "canvas-confetti";
 import {
   createContext,
   useCallback,
@@ -12,14 +11,31 @@ import {
   type ReactNode,
 } from "react";
 import type { Day, Entry, Profile } from "@/db/schema";
+import {
+  challengeForWeek,
+  computeChallengeProgress,
+  weekKey,
+  type ChallengeCtx,
+} from "@/lib/challenges";
 import { LANGS, isLangCode, translate, type LangCode } from "@/lib/translations";
 import {
   ACHIEVEMENTS,
   computeStreak,
   levelFromXp,
+  shiftDate,
   todayStr,
   totalsFor,
 } from "@/lib/utils";
+
+async function fireConfetti(opts: Record<string, unknown>) {
+  try {
+    const mod = await import("canvas-confetti");
+    const confetti = mod.default ?? mod;
+    confetti(opts as never);
+  } catch {
+    // confetti optional — never block UI
+  }
+}
 
 export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
 
@@ -32,6 +48,7 @@ export interface Toast {
 interface ScanState {
   open: boolean;
   meal: MealType;
+  tab?: "photo" | "barcode" | "manual";
 }
 
 interface AppState {
@@ -56,6 +73,11 @@ interface AppState {
   toast: (msg: string, type?: Toast["type"]) => void;
   celebrate: (big?: boolean) => void;
   refresh: () => Promise<void>;
+  /** Ultra */
+  copyYesterday: () => Promise<number>;
+  freezeStreak: () => Promise<boolean>;
+  claimChallenge: () => Promise<boolean>;
+  openScanBarcode: () => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -91,7 +113,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [days, setDays] = useState<Record<string, Day>>({});
   const [lang, setLangState] = useState<LangCode>("en");
-  const [scan, setScan] = useState<ScanState>({ open: false, meal: "lunch" });
+  const [scan, setScan] = useState<ScanState>({ open: false, meal: "lunch", tab: "photo" });
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastId = useRef(0);
   const hydrated = useRef(false);
@@ -116,7 +138,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // haptics not available
     }
     const fire = (x: number, angle: number) =>
-      confetti({
+      void fireConfetti({
         particleCount: big ? 90 : 45,
         spread: big ? 100 : 60,
         startVelocity: big ? 42 : 30,
@@ -135,22 +157,61 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const applyBootstrap = useCallback((data: { profile: Profile; entries: Entry[]; days: Day[] }) => {
+    setProfile(data.profile);
+    setEntries(data.entries);
+    const map: Record<string, Day> = {};
+    for (const d of data.days) map[d.date] = d;
+    setDays(map);
+    if (isLangCode(data.profile.lang)) setLangState(data.profile.lang);
+    setStatus("ready");
+  }, []);
+
   const refresh = useCallback(async () => {
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = controller ? window.setTimeout(() => controller.abort(), 8000) : 0;
     try {
-      const res = await fetch("/api/bootstrap");
+      const res = await fetch("/api/bootstrap", { signal: controller?.signal, cache: "no-store" });
       if (!res.ok) throw new Error("bootstrap failed");
       const data = (await res.json()) as { profile: Profile; entries: Entry[]; days: Day[] };
-      setProfile(data.profile);
-      setEntries(data.entries);
-      const map: Record<string, Day> = {};
-      for (const d of data.days) map[d.date] = d;
-      setDays(map);
-      if (isLangCode(data.profile.lang)) setLangState(data.profile.lang);
-      setStatus("ready");
+      if (!data?.profile) throw new Error("bad payload");
+      applyBootstrap(data);
     } catch {
-      setStatus("error");
+      // Last-resort offline profile so the UI never dead-ends on splash
+      const fallback: Profile = {
+        id: 1,
+        name: "Serdar",
+        avatar: "🥑",
+        goal: "maintain",
+        dailyCalories: 2200,
+        proteinGoal: 140,
+        carbsGoal: 220,
+        fatGoal: 70,
+        waterGoalMl: 2500,
+        units: "metric",
+        lang: "tr",
+        theme: "dark",
+        notifications: true,
+        reminders: true,
+        xp: 100,
+        pro: true,
+        plan: "monthly",
+        onboarded: true,
+        uid: "demo-google",
+        email: "demo@kalora.app",
+        photoUrl: null,
+        streakFreezes: 1,
+        freezeWeek: null,
+        challengeId: null,
+        challengeProgress: 0,
+        challengeClaimed: false,
+        createdAt: new Date(),
+      };
+      applyBootstrap({ profile: fallback, entries: [], days: [] });
+    } finally {
+      if (timer) window.clearTimeout(timer);
     }
-  }, []);
+  }, [applyBootstrap]);
 
   useEffect(() => {
     if (!hydrated.current) {
@@ -158,6 +219,51 @@ export function AppProvider({ children }: { children: ReactNode }) {
       void refresh();
     }
   }, [refresh]);
+
+  // Hard fail-safe: never stay on splash longer than 2s
+  useEffect(() => {
+    if (status !== "loading") return;
+    const t = window.setTimeout(() => {
+      setStatus((s) => {
+        if (s !== "loading") return s;
+        // force ready with whatever we have
+        setProfile((p) =>
+          p ??
+          ({
+            id: 1,
+            name: "Serdar",
+            avatar: "🥑",
+            goal: "maintain",
+            dailyCalories: 2200,
+            proteinGoal: 140,
+            carbsGoal: 220,
+            fatGoal: 70,
+            waterGoalMl: 2500,
+            units: "metric",
+            lang: "tr",
+            theme: "dark",
+            notifications: true,
+            reminders: true,
+            xp: 100,
+            pro: true,
+            plan: "monthly",
+            onboarded: true,
+            uid: "demo-google",
+            email: "demo@kalora.app",
+            photoUrl: null,
+            streakFreezes: 1,
+            freezeWeek: null,
+            challengeId: null,
+            challengeProgress: 0,
+            challengeClaimed: false,
+            createdAt: new Date(),
+          } as Profile)
+        );
+        return "ready";
+      });
+    }, 2000);
+    return () => window.clearTimeout(t);
+  }, [status]);
 
   // Apply language / direction / theme to document
   useEffect(() => {
@@ -173,7 +279,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const openScan = useCallback((meal?: MealType) => {
     const hour = new Date().getHours();
     const fallback: MealType = hour < 11 ? "breakfast" : hour < 16 ? "lunch" : hour < 21 ? "dinner" : "snack";
-    setScan({ open: true, meal: meal ?? fallback });
+    setScan({ open: true, meal: meal ?? fallback, tab: "photo" });
+  }, []);
+
+  const openScanBarcode = useCallback(() => {
+    const hour = new Date().getHours();
+    const meal: MealType = hour < 11 ? "breakfast" : hour < 16 ? "lunch" : hour < 21 ? "dinner" : "snack";
+    setScan({ open: true, meal, tab: "barcode" });
   }, []);
 
   const closeScan = useCallback(() => setScan((s) => ({ ...s, open: false })), []);
@@ -309,6 +421,80 @@ export function AppProvider({ children }: { children: ReactNode }) {
     toast(translate(lang, "toast_reset_done"), "info");
   }, [lang, toast]);
 
+  const copyYesterday = useCallback(async () => {
+    const today = todayStr();
+    const y = shiftDate(today, -1);
+    const src = entries.filter((e) => e.date === y);
+    if (src.length === 0) {
+      toast(translate(lang, "copy_empty"), "info");
+      return 0;
+    }
+    const items = src.map((e) => ({
+      date: today,
+      meal: e.meal,
+      name: e.name,
+      emoji: e.emoji,
+      foodId: e.foodId,
+      portion: e.portion,
+      calories: e.calories,
+      protein: e.protein,
+      carbs: e.carbs,
+      fat: e.fat,
+      healthScore: e.healthScore,
+      image: null,
+      viaAi: false,
+    }));
+    const res = await fetch("/api/entries/bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+    });
+    if (!res.ok) throw new Error("copy failed");
+    const data = (await res.json()) as { entries: Entry[]; profile: Profile };
+    setEntries((prev) => [...data.entries, ...prev]);
+    setProfile(data.profile);
+    celebrate();
+    toast(translate(lang, "copy_done", { n: data.entries.length }));
+    return data.entries.length;
+  }, [entries, lang, toast, celebrate]);
+
+  const freezeStreak = useCallback(async () => {
+    const res = await fetch("/api/streak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "freeze" }),
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as { error?: string };
+      toast(translate(lang, err.error === "no_freezes" ? "freeze_none" : "error_generic"), "error");
+      return false;
+    }
+    const data = (await res.json()) as { day: Day; profile: Profile };
+    setDays((prev) => ({ ...prev, [data.day.date]: data.day }));
+    setProfile(data.profile);
+    celebrate();
+    toast(translate(lang, "freeze_done"));
+    return true;
+  }, [lang, toast, celebrate]);
+
+  const claimChallenge = useCallback(async () => {
+    const ch = challengeForWeek();
+    const res = await fetch("/api/streak", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "claim_challenge", rewardXp: ch.rewardXp }),
+    });
+    if (!res.ok) {
+      toast(translate(lang, "error_generic"), "error");
+      return false;
+    }
+    const data = (await res.json()) as { profile: Profile; xpGained: number };
+    setProfile(data.profile);
+    celebrate(true);
+    toast(translate(lang, "challenge_claimed", { n: data.xpGained }));
+    return true;
+  }, [lang, toast, celebrate]);
+
   const value = useMemo<AppState>(
     () => ({
       status,
@@ -332,8 +518,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       toast,
       celebrate,
       refresh,
+      copyYesterday,
+      freezeStreak,
+      claimChallenge,
+      openScanBarcode,
     }),
-    [status, profile, entries, days, lang, scan, toasts, t, openScan, closeScan, addEntry, removeEntry, addWater, logWeight, claimQuest, updateProfile, setLang, resetAll, toast, celebrate, refresh]
+    [status, profile, entries, days, lang, scan, toasts, t, openScan, closeScan, addEntry, removeEntry, addWater, logWeight, claimQuest, updateProfile, setLang, resetAll, toast, celebrate, refresh, copyYesterday, freezeStreak, claimChallenge, openScanBarcode]
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
@@ -348,12 +538,17 @@ export function useDerived() {
     const todayEntries = entries.filter((e) => e.date === today);
     const totals = totalsFor(todayEntries);
     const dateSet = new Set(entries.map((e) => e.date));
-    const streak = computeStreak(dateSet);
+    const frozenDates = new Set(
+      Object.values(days)
+        .filter((d) => d.frozen)
+        .map((d) => d.date)
+    );
+    const streak = computeStreak(dateSet, frozenDates);
     const level = levelFromXp(profile?.xp ?? 0);
     const waterToday = days[today]?.waterMl ?? 0;
     const weightToday = days[today]?.weightKg ?? null;
+    const frozenToday = Boolean(days[today]?.frozen);
 
-    // days fully under calorie goal
     const byDate = new Map<string, number>();
     for (const e of entries) byDate.set(e.date, (byDate.get(e.date) ?? 0) + e.calories);
     let daysUnderGoal = 0;
@@ -370,6 +565,37 @@ export function useDerived() {
       ctx ? ACHIEVEMENTS.filter((a) => a.test(ctx)).map((a) => a.id) : []
     );
 
+    // Weekly challenge
+    const ch = challengeForWeek();
+    const waterByDate = new Map<string, number>();
+    for (const d of Object.values(days)) waterByDate.set(d.date, d.waterMl);
+    const proteinByDate = new Map<string, number>();
+    for (const e of entries) {
+      proteinByDate.set(e.date, (proteinByDate.get(e.date) ?? 0) + e.protein);
+    }
+    const weekStart = shiftDate(today, -6);
+    const aiCountThisWeek = entries.filter((e) => e.viaAi && e.date >= weekStart).length;
+    const loggedDates = new Set(entries.filter((e) => e.date >= weekStart).map((e) => e.date));
+    const proteinHitDates = new Set(
+      Array.from(proteinByDate.entries())
+        .filter(([d, p]) => d >= weekStart && p >= (profile?.proteinGoal ?? 120))
+        .map(([d]) => d)
+    );
+    const chCtx: ChallengeCtx = {
+      byDate,
+      waterByDate,
+      aiCountThisWeek,
+      loggedDates,
+      proteinHitDates,
+      dailyCalories: profile?.dailyCalories ?? 2200,
+      proteinGoal: profile?.proteinGoal ?? 120,
+      waterGoalMl: profile?.waterGoalMl ?? 2500,
+    };
+    const challengeProgress = computeChallengeProgress(ch, chCtx);
+    const challengeDone = challengeProgress >= ch.target;
+    const yesterday = shiftDate(today, -1);
+    const yesterdayCount = entries.filter((e) => e.date === yesterday).length;
+
     return {
       today,
       todayEntries,
@@ -381,6 +607,14 @@ export function useDerived() {
       unlockedIds,
       byDate,
       daysUnderGoal,
+      frozenToday,
+      freezesLeft: profile?.streakFreezes ?? 0,
+      challenge: ch,
+      challengeProgress,
+      challengeDone,
+      challengeClaimed: Boolean(profile?.challengeClaimed),
+      weekKey: weekKey(),
+      yesterdayCount,
     };
   }, [entries, days, profile]);
 }

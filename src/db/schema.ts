@@ -16,12 +16,18 @@ export const profile = pgTable("profile", {
   notifications: boolean("notifications").notNull().default(true),
   reminders: boolean("reminders").notNull().default(true),
   xp: integer("xp").notNull().default(0),
-  pro: boolean("pro").notNull().default(false),
+  pro: boolean("pro").notNull().default(true), // free product — all features unlocked
   plan: text("plan").notNull().default("free"), // free | monthly | six | yearly
   onboarded: boolean("onboarded").notNull().default(false),
   uid: text("uid"), // Firebase auth uid (or demo uid)
   email: text("email"),
   photoUrl: text("photo_url"),
+  // Ultra: streak freeze + weekly challenge
+  streakFreezes: integer("streak_freezes").notNull().default(1),
+  freezeWeek: text("freeze_week"), // ISO week key when last freeze was granted/used
+  challengeId: text("challenge_id"), // weekly challenge id
+  challengeProgress: integer("challenge_progress").notNull().default(0),
+  challengeClaimed: boolean("challenge_claimed").notNull().default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
@@ -48,6 +54,7 @@ export const days = pgTable("days", {
   waterMl: integer("water_ml").notNull().default(0),
   weightKg: real("weight_kg"),
   quests: text("quests"), // comma-separated claimed quest ids
+  frozen: boolean("frozen").notNull().default(false), // streak freeze applied this day
 });
 
 export const coachMessages = pgTable("coach_messages", {

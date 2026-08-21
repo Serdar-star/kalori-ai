@@ -27,12 +27,12 @@ export interface AuthUser {
 
 /**
  * realMode = Firebase is fully live.
- * While NEXT_PUBLIC_AUTH_MODE is "demo", every button signs in instantly
- * (simulated account) so the flow is frictionless; switch to "firebase"
- * at launch and the same code talks to the real backend.
+ * Preview / sandbox always uses demo auth so the UI never hangs on OAuth.
  */
-export const realMode =
-  firebaseEnabled && (process.env.NEXT_PUBLIC_AUTH_MODE ?? "firebase") !== "demo";
+const forceDemo =
+  (process.env.NEXT_PUBLIC_AUTH_MODE ?? "").toLowerCase() === "demo" || !firebaseEnabled;
+
+export const realMode = firebaseEnabled && !forceDemo;
 
 type AuthStatus = "loading" | "signedIn" | "signedOut";
 
@@ -58,6 +58,14 @@ export function useAuth(): AuthState {
 
 const DEMO_KEY = "kalora_demo_user";
 
+const DEFAULT_DEMO: AuthUser = {
+  uid: "demo-google",
+  name: "Serdar",
+  email: "demo@kalora.app",
+  photo: null,
+  provider: "google",
+};
+
 function readDemoUser(): AuthUser | null {
   try {
     const raw = localStorage.getItem(DEMO_KEY);
@@ -69,54 +77,91 @@ function readDemoUser(): AuthUser | null {
   }
 }
 
+function writeDemoUser(user: AuthUser) {
+  try {
+    localStorage.setItem(DEMO_KEY, JSON.stringify(user));
+  } catch {
+    // storage unavailable (private mode / iframe) — keep in memory only
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [status, setStatus] = useState<AuthStatus>("loading");
-  const [user, setUser] = useState<AuthUser | null>(null);
+  // Demo/preview: start already signed-in so the splash never hangs on first paint
+  const [status, setStatus] = useState<AuthStatus>(realMode ? "loading" : "signedIn");
+  const [user, setUser] = useState<AuthUser | null>(realMode ? null : DEFAULT_DEMO);
   const [busy, setBusy] = useState(false);
   const started = useRef(false);
+
+  const applyDemoUser = useCallback((provider: "google" | "apple" | "email" = "google", override?: Partial<AuthUser>) => {
+    const demo: AuthUser = {
+      ...DEFAULT_DEMO,
+      provider: provider === "email" ? "email" : provider,
+      ...override,
+      uid: override?.uid ?? (provider === "apple" ? "demo-apple" : provider === "email" ? "demo-email" : "demo-google"),
+    };
+    writeDemoUser(demo);
+    setUser(demo);
+    setStatus("signedIn");
+  }, []);
 
   useEffect(() => {
     if (started.current) return;
     started.current = true;
 
-    if (realMode) {
-      const unsub = firebaseOnAuthChanged((fu) => {
-        if (fu) {
-          const providerApple = fu.providerData.some((p) => p.providerId === "apple.com");
-          setUser({
-            uid: fu.uid,
-            name: fu.displayName ?? "Kalora User",
-            email: fu.email ?? "",
-            photo: fu.photoURL ?? null,
-            provider: providerApple ? "apple" : "google",
-          });
-          setStatus("signedIn");
-        } else {
-          setUser(null);
-          setStatus("signedOut");
-        }
+    // Never leave the splash forever — hard fallback after 1.2s
+    const failSafe = window.setTimeout(() => {
+      setStatus((s) => {
+        if (s !== "loading") return s;
+        // Auto-enter demo so the app is usable immediately in preview
+        const existing = readDemoUser() ?? DEFAULT_DEMO;
+        writeDemoUser(existing);
+        setUser(existing);
+        return "signedIn";
       });
-      return unsub;
+    }, 1200);
+
+    if (realMode) {
+      try {
+        const unsub = firebaseOnAuthChanged((fu) => {
+          window.clearTimeout(failSafe);
+          if (fu) {
+            const providerApple = fu.providerData.some((p) => p.providerId === "apple.com");
+            setUser({
+              uid: fu.uid,
+              name: fu.displayName ?? "Kalora User",
+              email: fu.email ?? "",
+              photo: fu.photoURL ?? null,
+              provider: providerApple ? "apple" : "google",
+            });
+            setStatus("signedIn");
+          } else {
+            setUser(null);
+            setStatus("signedOut");
+          }
+        });
+        return () => {
+          window.clearTimeout(failSafe);
+          unsub();
+        };
+      } catch {
+        window.clearTimeout(failSafe);
+        applyDemoUser("google");
+        return () => undefined;
+      }
     }
 
-    const demo = readDemoUser();
-    setUser(demo);
-    setStatus(demo ? "signedIn" : "signedOut");
-  }, []);
-
-  const applyDemoUser = useCallback((provider: "google" | "apple") => {
-    const demo: AuthUser =
-      provider === "google"
-        ? { uid: "demo-google", name: "Demo User", email: "demo@gmail.com", photo: null, provider }
-        : { uid: "demo-apple", name: "Demo User", email: "demo@icloud.com", photo: null, provider };
+    // Demo mode: restore session or auto-enter so preview is never stuck
     try {
-      localStorage.setItem(DEMO_KEY, JSON.stringify(demo));
+      const demo = readDemoUser() ?? DEFAULT_DEMO;
+      writeDemoUser(demo);
+      setUser(demo);
+      setStatus("signedIn");
     } catch {
-      // storage unavailable
+      applyDemoUser("google");
     }
-    setUser(demo);
-    setStatus("signedIn");
-  }, []);
+    window.clearTimeout(failSafe);
+    return () => window.clearTimeout(failSafe);
+  }, [applyDemoUser]);
 
   const signIn = useCallback(
     async (provider: "google" | "apple") => {
@@ -124,7 +169,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         if (realMode) {
           await firebaseSignIn(provider);
-          // state arrives via onAuthStateChanged
         } else {
           applyDemoUser(provider);
         }
@@ -141,34 +185,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       try {
         if (realMode) {
           await firebaseEmailSignIn(email, password, mode);
-          // state arrives via onAuthStateChanged
         } else {
           const clean = email.trim().toLowerCase();
           const raw = clean.split("@")[0].replace(/[._-]+/g, " ").trim() || "Kalora User";
           const name = raw.charAt(0).toUpperCase() + raw.slice(1);
-          const demo: AuthUser = {
-            uid: `mail-${clean}`,
-            name,
-            email: clean,
-            photo: null,
-            provider: "email",
-          };
-          try {
-            localStorage.setItem(DEMO_KEY, JSON.stringify(demo));
-          } catch {
-            // storage unavailable
-          }
-          setUser(demo);
-          setStatus("signedIn");
+          applyDemoUser("email", { uid: `mail-${clean}`, name, email: clean });
         }
       } finally {
         setBusy(false);
       }
     },
-    []
+    [applyDemoUser]
   );
 
-  // Escape hatch: enter the app without Firebase (preview / blocked popups)
   const signInDemo = useCallback(() => applyDemoUser("google"), [applyDemoUser]);
 
   const signOutUser = useCallback(async () => {
@@ -182,9 +211,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch {
       // ignore
     }
+    // In demo preview, signing out still leaves a guest so UI stays usable
+    if (!realMode) {
+      applyDemoUser("google", { name: "Guest", email: "guest@kalora.app", uid: "demo-guest" });
+      return;
+    }
     setUser(null);
     setStatus("signedOut");
-  }, []);
+  }, [applyDemoUser]);
 
   return (
     <Ctx.Provider

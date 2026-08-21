@@ -152,6 +152,31 @@ const ICON_PATHS: Record<string, ReactNode> = {
       <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" />
     </>
   ),
+  barcode: (
+    <>
+      <path d="M4 7v10M7 7v10M9.5 7v10M13 7v10M15.5 7v10M18.5 7v10M20.5 7v10" />
+    </>
+  ),
+  shield: (
+    <path d="M12 3.5 19.5 6.5v5.2c0 4.6-3 7.8-7.5 9.3-4.5-1.5-7.5-4.7-7.5-9.3V6.5z" />
+  ),
+  share: (
+    <>
+      <circle cx="18" cy="5.5" r="2.4" />
+      <circle cx="6" cy="12" r="2.4" />
+      <circle cx="18" cy="18.5" r="2.4" />
+      <path d="m8.2 13.1 7.5 4M15.7 6.9l-7.5 4" />
+    </>
+  ),
+  copy: (
+    <>
+      <rect x="8.5" y="8.5" width="11" height="11" rx="2" />
+      <path d="M6 15.5H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8.5a2 2 0 0 1 2 2v1" />
+    </>
+  ),
+  snowflake: (
+    <path d="M12 3.5v17M5.5 7.5l13 9M18.5 7.5l-13 9M4.5 12h15" />
+  ),
 };
 
 export function Ic({

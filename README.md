@@ -1,50 +1,99 @@
-# Kalora 🥑 — AI Kalori & Beslenme Takibi
+# Kalora 🥑 — Free AI Calorie & Nutrition Tracker
 
-Fotoğrafını çek, AI kalori ve makroları saysın. Streak'ler, XP, koç sohbeti ve 15 dil desteğiyle
-alışkanlık kuran bir beslenme asistanı.
+Photo → AI identifies food → **offline USDA-style DB** grounds real macros (including herbs).  
+Works fully free. No paid food APIs. No scan limits.
 
-## Özellikler
+## What actually works (free)
 
-- 📸 Fotoğraftan AI yemek tanıma (OpenAI GPT-4o Vision + anahtarsız demo motoru)
-- 🧠 Veriye dayalı AI koç sohbeti — kalan makrolara göre yemek önerir, tek tıkla günlüğe ekler
-- 🔥 Streak + XP/seviye sistemi, 10 başarım, konfeti kutlamalar
-- 💧 Su & ⚖️ kilo takibi, haftalık/aylık grafikler, yıldızlı haftalık rapor
-- 👑 Pro abonelik kapısı ($9.99/ay)
-- 🌍 15 dil (Arapça/Urduca RTL dahil), koyu/açık tema, kg/lb
-- 📱 PWA — ana ekrana eklenebilir
+| Feature | How (cost) |
+|---|---|
+| 📸 Photo meal scan | Gemini free tier (identity + grams) + offline nutrition DB |
+| ✍️ Type ingredients | Fully offline USDA DB — no API key needed |
+| 📦 Barcode / product search | Open Food Facts (free) + local fallback |
+| 🧠 Coach chat | Local intents always; Gemini free when key is set |
+| 📅 Meal plan | Local generator (unlocked for everyone) |
+| 🔥 Streak, XP, quests, freeze, challenges | Local Postgres |
+| 🌍 15 languages, dark/light, PWA | Built-in |
+| 👤 Auth | Demo mode by default; optional free Firebase |
 
-## Kurulum
+## One-command local start
 
 ```bash
 npm install
-cp .env.example .env          # DATABASE_URL yerel kurulumda hazır
-npx drizzle-kit push          # tabloları oluştur
-npm run dev
+cp .env.example .env
+# start embedded Postgres if you use scripts/start-pg.mjs
+npx drizzle-kit push
+npm run build && npx next start -H 0.0.0.0 -p 3000
 ```
 
-### Gerçek AI taramasını açmak
+### Make photo AI real (still free)
 
-`.env` dosyasına `OPENAI_API_KEY` ekleyin. Key varsa yemek fotoğrafları GPT-4o-mini ile
-gerçekten analiz edilir (sonuç ekranında "GPT-4o" rozeti görünür); key yoksa veya istek
-başarısız olursa uygulama otomatik olarak yerleşik demo motoruna düşer — hiçbir zaman kırılmaz.
+1. Open [Google AI Studio](https://aistudio.google.com/apikey) → create a free API key  
+2. Put it in `.env` (server only — never `NEXT_PUBLIC_`):
 
-## Production'a çıkarken yapılacaklar (yol haritası)
+```bash
+GEMINI_API_KEY=your_key_here
+GEMINI_MODEL=gemini-2.0-flash
+```
 
-| Alan | Gereken | Not |
-|---|---|---|
-| 🔐 Kimlik | NextAuth.js veya Clerk | Tablolara `user_id` kolonu; şu anki tek profilli yapı multi-user'a çevrilmeli |
-| 💳 Ödeme | Stripe Subscriptions | $9.99/ay Pro; webhook ile `profile.pro` güncellenir |
-| 🗄️ Veritabanı | Neon / Supabase / RDS | Local Postgres yerine managed servis + yedekleme |
-| 🖼️ Depolama | Cloudflare R2 / S3 / Cloudinary | Fotoğraflar data-URL yerine object storage'a |
-| 🍎 Besin DB | USDA FoodData Central / Open Food Facts | Barkod okuma ve daha geniş arama için |
-| 🔔 Bildirim | OneSignal / FCM | Öğün hatırlatmaları |
-| 📈 Analitik | PostHog + Sentry | retention & crash takibi |
-| 🚀 Deploy | Vercel | `vercel env add` ile key'leri tanımla |
-| 📲 Mağazalar | Capacitor (PWA'yı sarar) veya React Native | App Store sağlık uygulaması şartları: tıbbi tavsiye değildir uyarısı |
-| ⚖️ Hukuk | KVKK/GDPR aydınlatma, kullanım şartları | Veri silme hakkı zaten "Reset" ile mevcut |
+3. Restart the server. Photo scans show a **Gemini** badge + **✓ USDA verified** when items match the DB.
 
-## Komutlar
+Without a key you still get:
+- Sample / catalog scans grounded on the DB  
+- **Type food** tab (e.g. `tavuk, pirinç, fesleğen`)  
+- Barcode + manual search  
 
-- `npm run dev` — geliştirme sunucusu
-- `npm run build` — production build
-- `npx drizzle-kit push` — şema senkronu
+### Optional free extras
+
+```bash
+# OpenAI only as scan fallback (paid after free credit — optional)
+OPENAI_API_KEY=
+
+# Real Google/Apple/email login (Firebase free Spark plan)
+NEXT_PUBLIC_AUTH_MODE=demo   # keep "demo" until Firebase is ready
+NEXT_PUBLIC_FIREBASE_API_KEY=
+NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=
+NEXT_PUBLIC_FIREBASE_PROJECT_ID=
+# …rest from Firebase console
+```
+
+## Architecture (why it’s accurate + free)
+
+```
+Photo  → Gemini free  →  name + grams only
+Text   → offline parser →  name + default grams
+              ↓
+     nutrition-db.ts (USDA-style per 100g, herbs included)
+              ↓
+     grounded calories / protein / carbs / fat
+```
+
+Model calories are **recalculated** from the DB so a single basil leaf (~1–3 g) is ~1 kcal, not a hallucination.
+
+## Deploy free (recommended)
+
+| Piece | Free option |
+|---|---|
+| App host | [Vercel](https://vercel.com) hobby |
+| Database | [Neon](https://neon.tech) or [Supabase](https://supabase.com) free Postgres |
+| AI scan | Gemini AI Studio free key → Vercel env `GEMINI_API_KEY` |
+| Auth | Firebase Auth free Spark, or stay on demo |
+
+```bash
+# Vercel
+vercel
+vercel env add GEMINI_API_KEY
+vercel env add DATABASE_URL
+```
+
+## Product stance
+
+- **Scans & meal plans are unlimited** — no paywall on core tracking.  
+- Profile “Pro” UI can stay as optional future upsell; defaults unlock everything.  
+- Not medical advice.
+
+## Scripts
+
+- `npm run dev` — development  
+- `npm run build` / `npm start` — production  
+- `npx drizzle-kit push` — sync schema  

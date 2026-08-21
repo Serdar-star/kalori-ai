@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import AppShell from "@/components/AppShell";
-import { Paywall } from "@/components/Paywall";
+import { ShareCardButton } from "@/components/ShareCard";
 import { Ic, MacroBar, Ring, SectionTitle } from "@/components/ui";
 import { foodImageFor, generateMealPlan, type PlanItem } from "@/lib/foods";
 import { useApp, useDerived, type MealType } from "@/lib/store";
@@ -26,13 +26,16 @@ export default function TodayPage() {
 }
 
 function Today() {
-  const { profile, t, lang, entries, days, addEntry, claimQuest, openScan, addWater, logWeight, removeEntry, toast, celebrate } = useApp();
+  const {
+    profile, t, lang, entries, days, addEntry, claimQuest, openScan, openScanBarcode,
+    addWater, logWeight, removeEntry, toast, celebrate, copyYesterday, freezeStreak, claimChallenge,
+  } = useApp();
   const d = useDerived();
   const [weightOpen, setWeightOpen] = useState(false);
   const [weightVal, setWeightVal] = useState("");
   const [plan, setPlan] = useState<PlanItem[] | null>(null);
-  const [planPaywall, setPlanPaywall] = useState(false);
   const [planBusy, setPlanBusy] = useState(false);
+  const [copyBusy, setCopyBusy] = useState(false);
 
   const recentMeals = useMemo(() => {
     const seen = new Map<string, (typeof entries)[number]>();
@@ -156,9 +159,11 @@ function Today() {
           </h1>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <ShareCardButton />
           <span className="flex items-center gap-1.5 rounded-full border border-[var(--amber)]/40 bg-[var(--amber-soft)] px-3 py-1.5">
             <Ic name="flame" size={14} strokeWidth={2.3} className={d.streak.current > 0 ? "text-[var(--amber)]" : "text-[var(--faint)]"} />
             <span className="num text-[13px] font-extrabold text-[var(--amber)]">{d.streak.current}</span>
+            {d.frozenToday && <Ic name="snowflake" size={12} className="text-[var(--teal)]" strokeWidth={2.4} />}
           </span>
           <span className="flex items-center gap-1.5 rounded-full border border-[var(--line-strong)] bg-[var(--card)] px-3 py-1.5">
             <Ic name="star" size={13} className="text-[var(--accent)]" strokeWidth={2.2} />
@@ -166,6 +171,34 @@ function Today() {
           </span>
         </div>
       </header>
+
+      {/* quick actions: copy yesterday + barcode */}
+      <div className="flex gap-2">
+        <button
+          onClick={() => {
+            if (copyBusy) return;
+            setCopyBusy(true);
+            void copyYesterday().finally(() => setCopyBusy(false));
+          }}
+          disabled={copyBusy || d.yesterdayCount === 0}
+          className="card-flat flex flex-1 items-center justify-center gap-2 px-3 py-2.5 text-[12px] font-extrabold text-[var(--muted)] transition active:scale-95 disabled:opacity-40"
+        >
+          <Ic name="copy" size={14} strokeWidth={2.2} />
+          {copyBusy ? t("loading") : t("copy_yesterday")}
+          {d.yesterdayCount > 0 && (
+            <span className="num rounded-full bg-[var(--accent-soft)] px-1.5 text-[10px] text-[var(--accent-strong)]">
+              {d.yesterdayCount}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => openScanBarcode()}
+          className="card-flat flex flex-1 items-center justify-center gap-2 px-3 py-2.5 text-[12px] font-extrabold text-[var(--muted)] transition active:scale-95"
+        >
+          <Ic name="barcode" size={14} strokeWidth={2.2} />
+          {t("barcode_title")}
+        </button>
+      </div>
 
       {/* quick add strip */}
       {recentMeals.length > 0 && (
@@ -267,29 +300,19 @@ function Today() {
                 <Ic name="crown" size={12} strokeWidth={2.4} className="text-[var(--amber)]" />
               </p>
               <p className="truncate text-[11.5px] font-semibold text-[var(--muted)]">
-                {profile.pro ? t("plan_sub") : t("plan_lock")}
+                {t("plan_sub")}
               </p>
             </div>
           </div>
-          {profile.pro ? (
-            <button
-              onClick={() => setPlan(generateMealPlan(profile.dailyCalories, Date.now() % 9973))}
-              className="btn-accent shrink-0 px-4 py-2.5 text-[12px]"
-            >
-              {t("plan_gen")}
-            </button>
-          ) : (
-            <button
-              onClick={() => setPlanPaywall(true)}
-              className="btn-ghost flex shrink-0 items-center gap-1.5 px-4 py-2.5 text-[12px] text-[var(--amber)]"
-            >
-              <Ic name="lock" size={12} strokeWidth={2.4} />
-              {t("limit_cta")}
-            </button>
-          )}
+          <button
+            onClick={() => setPlan(generateMealPlan(profile.dailyCalories, Date.now() % 9973))}
+            className="btn-accent shrink-0 px-4 py-2.5 text-[12px]"
+          >
+            {t("plan_gen")}
+          </button>
         </div>
 
-        {profile.pro && plan && (
+        {plan && (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="relative mt-3 space-y-1.5">
             {plan.map((p) => (
               <div key={p.meal + p.food.id} className="flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--card)] px-3 py-2">
@@ -316,7 +339,75 @@ function Today() {
         )}
       </section>
 
-      <Paywall open={planPaywall} onClose={() => setPlanPaywall(false)} />
+      {/* weekly challenge + streak freeze */}
+      <section className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div
+          className="card relative overflow-hidden p-4"
+          style={{ borderColor: "color-mix(in srgb, var(--coral) 28%, var(--line))" }}
+        >
+          <div
+            className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full"
+            style={{ background: "radial-gradient(circle, var(--coral-soft), transparent 70%)" }}
+          />
+          <div className="relative flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <p className="flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wide text-[var(--coral)]">
+                <span>{d.challenge.emoji}</span>
+                {t("challenge_title")}
+              </p>
+              <p className="mt-1 truncate text-[13.5px] font-extrabold">{t(d.challenge.nameKey)}</p>
+              <p className="mt-0.5 text-[11px] font-semibold text-[var(--muted)]">{t(d.challenge.descKey)}</p>
+            </div>
+            <span className="num shrink-0 rounded-full bg-[var(--coral-soft)] px-2 py-1 text-[11px] font-extrabold text-[var(--coral)]">
+              {d.challengeProgress}/{d.challenge.target}
+            </span>
+          </div>
+          <div className="track relative mt-3 h-[7px]">
+            <div
+              className="h-full rounded-full transition-all duration-500"
+              style={{
+                width: `${Math.min(100, (d.challengeProgress / d.challenge.target) * 100)}%`,
+                background: "linear-gradient(90deg, var(--coral), var(--amber))",
+              }}
+            />
+          </div>
+          {d.challengeDone && !d.challengeClaimed ? (
+            <button
+              onClick={() => void claimChallenge()}
+              className="btn-accent mt-3 w-full py-2.5 text-[12px]"
+            >
+              {t("challenge_claim")} · +{d.challenge.rewardXp} XP
+            </button>
+          ) : d.challengeClaimed ? (
+            <p className="mt-2.5 text-center text-[11px] font-bold text-[var(--accent-strong)]">✓ {t("challenge_done")}</p>
+          ) : null}
+        </div>
+
+        <div className="card flex flex-col justify-between p-4">
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-2 text-[13px] font-extrabold">
+              <Ic name="shield" size={15} className="text-[var(--teal)]" strokeWidth={2.1} />
+              {t("freeze_title")}
+            </span>
+            <span className="num rounded-full border border-[var(--line)] px-2 py-0.5 text-[11px] font-extrabold text-[var(--muted)]">
+              {d.freezesLeft} {t("freeze_left")}
+            </span>
+          </div>
+          <p className="mt-2 text-[11.5px] font-semibold leading-relaxed text-[var(--muted)]">
+            {d.frozenToday ? t("freeze_active") : t("freeze_desc")}
+          </p>
+          <button
+            onClick={() => void freezeStreak()}
+            disabled={d.frozenToday || d.freezesLeft <= 0}
+            className="btn-ghost mt-3 w-full py-2.5 text-[12px] text-[var(--teal)] disabled:opacity-40"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <Ic name="snowflake" size={13} strokeWidth={2.3} />
+              {d.frozenToday ? t("freeze_active") : t("freeze_use")}
+            </span>
+          </button>
+        </div>
+      </section>
 
       {/* daily quests */}
       <section className="card p-4">

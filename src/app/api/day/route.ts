@@ -52,9 +52,10 @@ export async function POST(req: Request) {
       }
     }
 
+    const frozen = existing[0]?.frozen ?? false;
     const upserted = await db
       .insert(days)
-      .values({ date, waterMl, weightKg, quests })
+      .values({ date, waterMl, weightKg, quests, frozen })
       .onConflictDoUpdate({ target: days.date, set: { waterMl, weightKg, quests } })
       .returning();
 

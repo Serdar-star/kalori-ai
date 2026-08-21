@@ -3,21 +3,32 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FOODS, findFood, foodTotals, type Food } from "@/lib/foods";
-import { useApp, useDerived, type MealType } from "@/lib/store";
+import { useApp, type MealType } from "@/lib/store";
 import { compressImage, healthColor, imageFingerprint } from "@/lib/utils";
 import { HealthPill, Ic, Sheet } from "@/components/ui";
 import { Paywall } from "@/components/Paywall";
 
-export const FREE_SCAN_LIMIT = 3;
-
 interface AnalyzeResult {
   food: { id: string; name: string; emoji?: string; image?: string; healthScore: number; portion: string };
-  items: { name: string; emoji?: string; portion: string; calories: number; protein?: number; carbs?: number; fat?: number }[];
+  items: {
+    name: string;
+    emoji?: string;
+    portion: string;
+    grams?: number;
+    calories: number;
+    protein?: number;
+    carbs?: number;
+    fat?: number;
+    source?: "usda_local" | "model_estimate";
+    dbId?: string | null;
+  }[];
   totals: { calories: number; protein: number; carbs: number; fat: number };
   confidence: number;
   alternatives: { id: string; name: string; image?: string; emoji?: string; calories: number }[];
   tipIndex: number;
-  engine?: "gpt" | "local";
+  engine?: "gpt" | "gemini" | "local";
+  verified?: boolean;
+  groundedRatio?: number;
 }
 
 const SAMPLES: { url: string; hint: string; label: string }[] = [
@@ -60,14 +71,34 @@ const MEALS: { id: MealType; key: string; emoji: string }[] = [
   { id: "snack", key: "meal_snack", emoji: "🍿" },
 ];
 
-type Step = "source" | "analyzing" | "result" | "manual";
+type Step = "source" | "analyzing" | "result" | "manual" | "barcode" | "text";
+
+interface EditableItem {
+  name: string;
+  portion: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+}
+
+interface BarcodeProduct {
+  name: string;
+  brand?: string | null;
+  image?: string | null;
+  portion: string;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  healthScore: number;
+  code?: string | null;
+}
 
 export default function ScanSheet() {
   const app = useApp();
-  const { scan, closeScan, t, addEntry, celebrate, profile } = app;
-  const d = useDerived();
-  const aiUsed = d.todayEntries.filter((e) => e.viaAi).length;
-  const aiLeft = Math.max(0, FREE_SCAN_LIMIT - aiUsed);
+  const { scan, closeScan, t, addEntry, celebrate } = app;
+  // Free product: no daily AI scan paywall
   const [paywall, setPaywall] = useState(false);
 
   const [step, setStep] = useState<Step>("source");
@@ -80,13 +111,19 @@ export default function ScanSheet() {
   const [busy, setBusy] = useState(false);
   const [statusIdx, setStatusIdx] = useState(0);
   const [query, setQuery] = useState("");
+  const [textQuery, setTextQuery] = useState("");
+  const [editItems, setEditItems] = useState<EditableItem[] | null>(null);
+  const [barcode, setBarcode] = useState("");
+  const [barcodeBusy, setBarcodeBusy] = useState(false);
+  const [barcodeResults, setBarcodeResults] = useState<BarcodeProduct[]>([]);
+  const [barcodeErr, setBarcodeErr] = useState<string | null>(null);
 
   const cameraRef = useRef<HTMLInputElement>(null);
   const galleryRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (scan.open) {
-      setStep("source");
+      setStep(scan.tab === "barcode" ? "barcode" : scan.tab === "manual" ? "manual" : "source");
       setImg(null);
       setImgToStore(null);
       setResult(null);
@@ -96,8 +133,13 @@ export default function ScanSheet() {
       setBusy(false);
       setStatusIdx(0);
       setQuery("");
+      setTextQuery("");
+      setEditItems(null);
+      setBarcode("");
+      setBarcodeResults([]);
+      setBarcodeErr(null);
     }
-  }, [scan.open, scan.meal]);
+  }, [scan.open, scan.meal, scan.tab]);
 
   useEffect(() => {
     if (step !== "analyzing") return;
@@ -106,21 +148,19 @@ export default function ScanSheet() {
   }, [step]);
 
   const runAnalysis = async (
-    payload: { seed?: string; hint?: string; image?: string },
+    payload: { seed?: string; hint?: string; image?: string; text?: string },
     display: string,
     store: string | null
   ) => {
-    // Pro gating: free accounts get FREE_SCAN_LIMIT AI scans per day
-    if (profile && !profile.pro && aiLeft <= 0) {
-      setPaywall(true);
-      return;
-    }
-    const animated = display.length > 0;
-    if (animated) {
+    const animated = display.length > 0 || Boolean(payload.text);
+    if (display.length > 0) {
       setImg(display);
       setImgToStore(store);
-      setStep("analyzing");
+    } else {
+      setImg(null);
+      setImgToStore(null);
     }
+    if (animated) setStep("analyzing");
     const started = Date.now();
     try {
       const res = await fetch("/api/analyze", {
@@ -131,16 +171,26 @@ export default function ScanSheet() {
       if (!res.ok) throw new Error("analyze failed");
       const data = (await res.json()) as AnalyzeResult;
       const elapsed = Date.now() - started;
-      const wait = animated ? Math.max(0, 2700 - elapsed) : 0;
+      const wait = animated ? Math.max(0, payload.text ? 900 : 2700 - elapsed) : 0;
       setTimeout(() => {
         setResult(data);
         setActiveFoodId(data.food.id);
         setPortion(1);
+        setEditItems(
+          data.items.map((i) => ({
+            name: i.name,
+            portion: i.portion,
+            calories: i.calories,
+            protein: i.protein ?? 0,
+            carbs: i.carbs ?? 0,
+            fat: i.fat ?? 0,
+          }))
+        );
         setStep("result");
       }, wait);
     } catch {
       app.toast(t("error_generic"), "error");
-      setStep(animated ? "source" : "manual");
+      setStep(payload.text ? "text" : animated && display ? "source" : "manual");
     }
   };
 
@@ -166,10 +216,31 @@ export default function ScanSheet() {
   const activeView = useMemo(() => {
     if (!result) return null;
     const local = activeFoodId ? findFood(activeFoodId) : undefined;
-    if (local) {
+    if (local && (!editItems || activeFoodId !== result.food.id)) {
       const totals =
         activeFoodId === result.food.id && portion === 1 ? result.totals : foodTotals(local, portion);
       return { name: local.name, image: local.image as string | null, healthScore: local.healthScore, totals };
+    }
+    // Editable items take priority when user tweaked the detection
+    if (editItems && editItems.length > 0 && activeFoodId === result.food.id) {
+      const base = {
+        calories: editItems.reduce((s, i) => s + i.calories, 0),
+        protein: editItems.reduce((s, i) => s + i.protein, 0),
+        carbs: editItems.reduce((s, i) => s + i.carbs, 0),
+        fat: editItems.reduce((s, i) => s + i.fat, 0),
+      };
+      const r1 = (n: number) => Math.round(n * portion * 10) / 10;
+      return {
+        name: result.food.name,
+        image: (result.food as { image?: string }).image ?? null,
+        healthScore: result.food.healthScore,
+        totals: {
+          calories: Math.round(base.calories * portion),
+          protein: r1(base.protein),
+          carbs: r1(base.carbs),
+          fat: r1(base.fat),
+        },
+      };
     }
     const r1 = (n: number) => Math.round(n * portion * 10) / 10;
     return {
@@ -183,7 +254,7 @@ export default function ScanSheet() {
         fat: r1(result.totals.fat),
       },
     };
-  }, [result, activeFoodId, portion]);
+  }, [result, activeFoodId, portion, editItems]);
 
   const save = async () => {
     if (!result || !activeView || busy) return;
@@ -211,6 +282,83 @@ export default function ScanSheet() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const lookupBarcode = async (codeOrQuery: string, asSearch = false) => {
+    const q = codeOrQuery.trim();
+    if (!q) return;
+    setBarcodeBusy(true);
+    setBarcodeErr(null);
+    try {
+      const url = asSearch
+        ? `/api/barcode?q=${encodeURIComponent(q)}`
+        : `/api/barcode?code=${encodeURIComponent(q.replace(/\D/g, ""))}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        setBarcodeErr(t("barcode_not_found"));
+        setBarcodeResults([]);
+        return;
+      }
+      const data = (await res.json()) as {
+        product?: BarcodeProduct;
+        results?: BarcodeProduct[];
+      };
+      if (data.product) {
+        setBarcodeResults([{ ...data.product, code: q }]);
+      } else {
+        setBarcodeResults(data.results ?? []);
+        if (!data.results?.length) setBarcodeErr(t("barcode_not_found"));
+      }
+    } catch {
+      setBarcodeErr(t("error_generic"));
+    } finally {
+      setBarcodeBusy(false);
+    }
+  };
+
+  const addBarcodeProduct = async (p: BarcodeProduct) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await addEntry({
+        date: new Date().toISOString().slice(0, 10),
+        meal,
+        name: p.brand ? `${p.name} · ${p.brand}` : p.name,
+        emoji: "📦",
+        foodId: p.code ? `off-${p.code}` : null,
+        portion: p.portion,
+        calories: p.calories,
+        protein: p.protein,
+        carbs: p.carbs,
+        fat: p.fat,
+        healthScore: p.healthScore,
+        image: p.image ?? null,
+        viaAi: true,
+      });
+      closeScan();
+      celebrate();
+    } catch {
+      app.toast(t("error_generic"), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const tweakItem = (idx: number, field: keyof EditableItem, delta: number) => {
+    setEditItems((prev) => {
+      if (!prev) return prev;
+      const next = prev.map((it, i) => {
+        if (i !== idx) return it;
+        if (field === "name" || field === "portion") return it;
+        const v = Math.max(0, Math.round((Number(it[field]) + delta) * 10) / 10);
+        return { ...it, [field]: field === "calories" ? Math.round(v) : v };
+      });
+      return next;
+    });
+  };
+
+  const removeEditItem = (idx: number) => {
+    setEditItems((prev) => (prev ? prev.filter((_, i) => i !== idx) : prev));
   };
 
   const manualMatches = useMemo(() => {
@@ -245,10 +393,24 @@ export default function ScanSheet() {
       <div className="sticky top-0 z-10 flex items-center justify-between border-b border-[var(--line)] bg-[var(--surface)]/95 px-5 py-4 backdrop-blur">
         <div>
           <h3 className="font-display text-[16px] font-bold tracking-tight">
-            {step === "manual" ? t("scan_manual") : step === "result" ? t("scan_detected") : t("scan_title")}
+            {step === "manual"
+              ? t("scan_manual")
+              : step === "barcode"
+                ? t("barcode_title")
+                : step === "text"
+                  ? t("scan_text_title")
+                  : step === "result"
+                    ? t("scan_detected")
+                    : t("scan_title")}
           </h3>
           {step === "source" && (
             <p className="text-[12px] font-semibold text-[var(--muted)]">{t("scan_subtitle")}</p>
+          )}
+          {step === "barcode" && (
+            <p className="text-[12px] font-semibold text-[var(--muted)]">{t("barcode_sub")}</p>
+          )}
+          {step === "text" && (
+            <p className="text-[12px] font-semibold text-[var(--muted)]">{t("scan_text_sub")}</p>
           )}
         </div>
         <button
@@ -299,29 +461,34 @@ export default function ScanSheet() {
               </div>
             </div>
 
-            <button
-              onClick={() => setStep("manual")}
-              className="flex w-full items-center justify-center gap-2 rounded-full border border-[var(--line)] py-3 text-[13px] font-bold text-[var(--muted)] transition hover:text-[var(--ink)]"
-            >
-              <Ic name="pencil" size={15} />
-              {t("scan_manual")}
-            </button>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                onClick={() => setStep("text")}
+                className="flex items-center justify-center gap-1.5 rounded-full border border-[var(--line)] py-3 text-[12px] font-bold text-[var(--muted)] transition hover:text-[var(--ink)]"
+              >
+                <Ic name="sparkle" size={14} />
+                {t("scan_text_title")}
+              </button>
+              <button
+                onClick={() => setStep("barcode")}
+                className="flex items-center justify-center gap-1.5 rounded-full border border-[var(--line)] py-3 text-[12px] font-bold text-[var(--muted)] transition hover:text-[var(--ink)]"
+              >
+                <Ic name="barcode" size={14} />
+                {t("barcode_title")}
+              </button>
+              <button
+                onClick={() => setStep("manual")}
+                className="flex items-center justify-center gap-1.5 rounded-full border border-[var(--line)] py-3 text-[12px] font-bold text-[var(--muted)] transition hover:text-[var(--ink)]"
+              >
+                <Ic name="pencil" size={14} />
+                {t("scan_manual")}
+              </button>
+            </div>
 
-            {profile && !profile.pro && (
-              <div className="flex items-center justify-between rounded-2xl border border-[var(--amber)]/30 bg-[var(--amber-soft)] px-4 py-2.5">
-                <span className="flex items-center gap-2 text-[11.5px] font-extrabold text-[var(--amber)]">
-                  <Ic name="camera" size={13} strokeWidth={2.4} />
-                  {t("limit_counter", { left: aiLeft, total: FREE_SCAN_LIMIT })}
-                </span>
-                <button
-                  onClick={() => setPaywall(true)}
-                  className="flex items-center gap-1 text-[11px] font-extrabold text-[var(--amber)] underline underline-offset-2"
-                >
-                  <Ic name="crown" size={12} strokeWidth={2.4} />
-                  {t("limit_cta")}
-                </button>
-              </div>
-            )}
+            <div className="flex items-center gap-2 rounded-2xl border border-[var(--teal)]/30 bg-[var(--teal-soft)] px-4 py-2.5">
+              <Ic name="check" size={13} strokeWidth={2.6} className="shrink-0 text-[var(--teal)]" />
+              <span className="text-[11.5px] font-extrabold text-[var(--teal)]">{t("scan_free_badge")}</span>
+            </div>
           </motion.div>
         )}
 
@@ -394,11 +561,26 @@ export default function ScanSheet() {
                       <p className="font-display text-[15.5px] font-bold leading-tight text-white drop-shadow">
                         {activeView?.name}
                       </p>
-                      <p className="flex items-center gap-1.5 text-[11px] font-bold text-white/75">
+                      <p className="flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-white/75">
                         {Math.round(result.confidence * 100)}% {t("scan_confidence")}
+                        {result.engine === "gemini" && (
+                          <span className="rounded-full bg-[var(--accent)] px-1.5 py-px text-[9px] font-extrabold text-[var(--accent-ink)]">
+                            Gemini
+                          </span>
+                        )}
                         {result.engine === "gpt" && (
                           <span className="rounded-full bg-[var(--accent)] px-1.5 py-px text-[9px] font-extrabold text-[var(--accent-ink)]">
                             GPT-4o
+                          </span>
+                        )}
+                        {result.verified && (
+                          <span className="rounded-full bg-[var(--teal)] px-1.5 py-px text-[9px] font-extrabold text-[#062a24]">
+                            ✓ {t("scan_verified")}
+                          </span>
+                        )}
+                        {typeof result.groundedRatio === "number" && (
+                          <span className="rounded-full bg-white/15 px-1.5 py-px text-[9px] font-extrabold text-white/90">
+                            DB {result.groundedRatio}%
                           </span>
                         )}
                       </p>
@@ -439,25 +621,65 @@ export default function ScanSheet() {
               </div>
             </div>
 
-            {/* detected items */}
+            {/* detected items — editable */}
             <div className="mt-4">
-              <p className="mb-2 text-[12px] font-bold text-[var(--muted)]">{t("scan_items")}</p>
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-[12px] font-bold text-[var(--muted)]">{t("scan_items")}</p>
+                <p className="text-[10.5px] font-bold text-[var(--faint)]">{t("scan_edit_hint")}</p>
+              </div>
               <div className="space-y-1.5">
-                {result.items.map((item) => (
+                {(editItems ?? result.items.map((i) => ({
+                  name: i.name,
+                  portion: i.portion,
+                  calories: i.calories,
+                  protein: i.protein ?? 0,
+                  carbs: i.carbs ?? 0,
+                  fat: i.fat ?? 0,
+                }))).map((item, idx) => {
+                  const src = result.items[idx]?.source;
+                  return (
                   <div
-                    key={item.name}
-                    className="flex items-center justify-between rounded-xl border border-[var(--line)] bg-[var(--card)] px-3.5 py-2.5"
+                    key={`${item.name}-${idx}`}
+                    className="flex items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--card)] px-3 py-2"
                   >
-                    <div className="flex min-w-0 items-center gap-2.5">
-                      <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--accent)]" />
-                      <div className="min-w-0">
-                        <p className="truncate text-[13px] font-bold">{item.name}</p>
-                        <p className="text-[11px] font-semibold text-[var(--faint)]">{item.portion}</p>
-                      </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="flex items-center gap-1.5 truncate text-[13px] font-bold">
+                        {item.name}
+                        {src === "usda_local" && (
+                          <span className="shrink-0 rounded bg-[var(--teal-soft)] px-1 text-[9px] font-extrabold text-[var(--teal)]">
+                            DB
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-[11px] font-semibold text-[var(--faint)]">
+                        {item.portion}
+                        {result.items[idx]?.grams ? ` · ${result.items[idx]?.grams}g` : ""}
+                      </p>
                     </div>
-                    <span className="num text-[13px] font-bold text-[var(--muted)]">{item.calories}</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => tweakItem(idx, "calories", -10)}
+                        className="grid h-7 w-7 place-items-center rounded-full border border-[var(--line)] text-[12px] font-bold text-[var(--muted)]"
+                      >
+                        −
+                      </button>
+                      <span className="num min-w-[36px] text-center text-[13px] font-extrabold">{item.calories}</span>
+                      <button
+                        onClick={() => tweakItem(idx, "calories", 10)}
+                        className="grid h-7 w-7 place-items-center rounded-full border border-[var(--line)] text-[12px] font-bold text-[var(--muted)]"
+                      >
+                        +
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => removeEditItem(idx)}
+                      className="grid h-7 w-7 place-items-center rounded-full text-[var(--faint)] hover:bg-[var(--coral-soft)] hover:text-[var(--coral)]"
+                      aria-label={t("remove")}
+                    >
+                      <Ic name="trash" size={13} />
+                    </button>
                   </div>
-                ))}
+                );})}
               </div>
             </div>
 
@@ -525,8 +747,174 @@ export default function ScanSheet() {
           </motion.div>
         )}
 
-        {/* paywall (scan limit) */}
-        <Paywall open={paywall} onClose={() => setPaywall(false)} limitReason={profile ? !profile.pro && aiLeft <= 0 : false} />
+        {/* optional paywall (kept for profile upsell only; scans are free) */}
+        <Paywall open={paywall} onClose={() => setPaywall(false)} limitReason={false} />
+
+        {/* ---------- TEXT / OFFLINE INGREDIENTS ---------- */}
+        {step === "text" && (
+          <motion.div key="text" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-4 p-5">
+            <div className="rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4">
+              <p className="mb-2 text-[12px] font-extrabold text-[var(--muted)]">{t("scan_text_hint")}</p>
+              <textarea
+                value={textQuery}
+                onChange={(e) => setTextQuery(e.target.value)}
+                placeholder={t("scan_text_ph")}
+                rows={3}
+                className="input w-full resize-none px-3 py-3 text-[14px] font-semibold"
+                autoFocus
+              />
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {[
+                  "tavuk, pirinç, fesleğen, zeytinyağı",
+                  "chicken, rice, basil, olive oil",
+                  "yumurta, avokado, ekmek",
+                  "somon, brokoli, quinoa",
+                ].map((ex) => (
+                  <button
+                    key={ex}
+                    onClick={() => setTextQuery(ex)}
+                    className="rounded-full border border-[var(--line)] px-2.5 py-1 text-[10.5px] font-bold text-[var(--faint)]"
+                  >
+                    {ex}
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => {
+                  const q = textQuery.trim();
+                  if (!q) return;
+                  void runAnalysis({ text: q }, "", null);
+                }}
+                disabled={!textQuery.trim()}
+                className="btn-accent mt-3 w-full py-3 text-[14px]"
+              >
+                {t("scan_text_go")}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-4 gap-2">
+              {MEALS.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => setMeal(m.id)}
+                  className={`flex flex-col items-center gap-1 rounded-2xl border py-2 text-[11px] font-bold transition ${
+                    meal === m.id
+                      ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                      : "border-[var(--line)] text-[var(--muted)]"
+                  }`}
+                >
+                  <span className="text-[15px]">{m.emoji}</span>
+                  {t(m.key)}
+                </button>
+              ))}
+            </div>
+
+            <button onClick={() => setStep("source")} className="btn-ghost w-full py-3 text-[13px]">
+              ← {t("scan_title")}
+            </button>
+          </motion.div>
+        )}
+
+        {/* ---------- BARCODE / OFF ---------- */}
+        {step === "barcode" && (
+          <motion.div key="barcode" initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="space-y-4 p-5">
+            <div className="rounded-2xl border border-[var(--line)] bg-[var(--card)] p-4">
+              <p className="mb-2 flex items-center gap-2 text-[12px] font-extrabold text-[var(--muted)]">
+                <Ic name="barcode" size={14} strokeWidth={2.2} />
+                {t("barcode_enter")}
+              </p>
+              <div className="flex gap-2">
+                <input
+                  value={barcode}
+                  onChange={(e) => setBarcode(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void lookupBarcode(barcode, !/^\d{8,}$/.test(barcode.trim()))}
+                  placeholder="8690… / Nutella"
+                  inputMode="search"
+                  className="input min-w-0 flex-1 px-3 py-3 text-[14px] font-bold"
+                  autoFocus
+                />
+                <button
+                  onClick={() => void lookupBarcode(barcode, !/^\d{8,}$/.test(barcode.trim()))}
+                  disabled={barcodeBusy || !barcode.trim()}
+                  className="btn-accent shrink-0 px-4 py-3 text-[13px]"
+                >
+                  {barcodeBusy ? t("loading") : t("barcode_lookup")}
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {[
+                  { c: "3017620422003", l: "Nutella" },
+                  { c: "5449000000996", l: "Cola" },
+                  { c: "8690504123456", l: "Yoğurt" },
+                  { c: "yogurt", l: "🔍 yogurt" },
+                ].map((x) => (
+                  <button
+                    key={x.c}
+                    onClick={() => {
+                      setBarcode(x.c);
+                      void lookupBarcode(x.c, !/^\d{8,}$/.test(x.c));
+                    }}
+                    className="rounded-full border border-[var(--line)] px-2.5 py-1 text-[10.5px] font-bold text-[var(--faint)]"
+                  >
+                    {x.l}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* meal picker */}
+            <div className="grid grid-cols-4 gap-2">
+              {MEALS.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => setMeal(m.id)}
+                  className={`flex flex-col items-center gap-1 rounded-2xl border py-2 text-[11px] font-bold transition ${
+                    meal === m.id
+                      ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                      : "border-[var(--line)] text-[var(--muted)]"
+                  }`}
+                >
+                  <span className="text-[15px]">{m.emoji}</span>
+                  {t(m.key)}
+                </button>
+              ))}
+            </div>
+
+            {barcodeErr && (
+              <p className="text-center text-[12.5px] font-bold text-[var(--coral)]">{barcodeErr}</p>
+            )}
+
+            <div className="space-y-2">
+              {barcodeResults.map((p, i) => (
+                <button
+                  key={`${p.name}-${i}`}
+                  onClick={() => void addBarcodeProduct(p)}
+                  disabled={busy}
+                  className="flex w-full items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--card)] p-3 text-start transition hover:border-[var(--accent)] active:scale-[0.99]"
+                >
+                  {p.image ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={p.image} alt="" className="h-12 w-12 shrink-0 rounded-xl border border-[var(--line)] object-cover" />
+                  ) : (
+                    <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-[var(--card2)] text-[20px]">📦</span>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[13.5px] font-extrabold">{p.name}</p>
+                    <p className="truncate text-[11px] font-semibold text-[var(--faint)]">
+                      {p.brand ? `${p.brand} · ` : ""}
+                      {p.portion} · P{p.protein}g
+                    </p>
+                  </div>
+                  <span className="num shrink-0 text-[15px] font-extrabold">{p.calories}</span>
+                </button>
+              ))}
+            </div>
+
+            <button onClick={() => setStep("source")} className="btn-ghost w-full py-3 text-[13px]">
+              ← {t("scan_title")}
+            </button>
+          </motion.div>
+        )}
 
         {/* ---------- MANUAL ---------- */}
         {step === "manual" && (

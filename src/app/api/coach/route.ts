@@ -2,7 +2,7 @@ import { asc, desc } from "drizzle-orm";
 import { db } from "@/db";
 import { coachMessages, days, entries } from "@/db/schema";
 import type { Entry } from "@/db/schema";
-import { buildReply, detectIntent, type CoachCtx, type Intent } from "@/lib/coach";
+import { buildReply, detectIntent, tryGeminiCoach, type CoachCtx, type Intent } from "@/lib/coach";
 import { ensureProfile, json } from "@/lib/server";
 import { computeStreak, shiftDate, todayStr, totalsFor } from "@/lib/utils";
 
@@ -92,6 +92,18 @@ export async function POST(req: Request) {
 
     const countRow = await db.select().from(coachMessages).orderBy(desc(coachMessages.id)).limit(1);
     const seed = (countRow[0]?.id ?? 0) + (text.length || 1);
+
+    // Free Gemini coach when key is present and user typed free-form text
+    if (text && !explicit) {
+      const live = await tryGeminiCoach(text, ctx);
+      if (live) {
+        const coachMsg = await db
+          .insert(coachMessages)
+          .values({ role: "coach", text: live.text })
+          .returning();
+        return json({ userMsg: userMsg ? serialize(userMsg) : null, coachMsg: serialize(coachMsg[0]) });
+      }
+    }
 
     const intent = explicit ?? (text ? detectIntent(text) : "fallback");
     const reply = buildReply(intent, ctx, seed);

@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# next
+.next/
+out/
+build/
+dist/
+
+# env / secrets — never commit
+.env
+.env.local
+.env.*.local
+*.pem
+
+# debug / os
+npm-debug.log*
+.DS_Store
+*.tsbuildinfo
+next-env.d.ts
+
+# local postgres / data
+.pgdata/
+data/
+
+# misc
+.vercel
+coverage/
+.turbo
