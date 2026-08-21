@@ -1,0 +1,23 @@
+{
+  "name": "Kalora — AI Calorie & Nutrition Tracker",
+  "short_name": "Kalora",
+  "description": "Snap a photo of your meal and let AI count the calories and macros.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0e09",
+  "theme_color": "#0b0e09",
+  "icons": [
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
